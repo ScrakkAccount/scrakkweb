@@ -610,14 +610,20 @@
                 submitBtn.disabled = true;
                 
                 try {
-                    const userData = {
-                        email,
-                        password,
-                        nombre,
-                        apellido
-                    };
-
-                    await authService.registerUser(userData);
+                    // Crear usuario en Firebase Auth
+                    const userCredential = await firebase.auth().createUserWithEmailAndPassword(email, password);
+                    const user = userCredential.user;
+                    
+                    // Crear documento de usuario en Firestore
+                    await firebase.firestore().collection('users').doc(user.uid).set({
+                        id: user.uid,
+                        email: email,
+                        nombre: nombre,
+                        apellido: apellido,
+                        avatar: null,
+                        status: 'online',
+                        createdAt: new Date().toISOString()
+                    });
                     
                     successMessage.textContent = '¡Registro exitoso! Redirigiendo...';
                     successMessage.style.display = 'block';

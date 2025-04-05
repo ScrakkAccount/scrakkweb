@@ -2998,6 +2998,9 @@
 
                 // Guardar servidor actual
                 await saveData('current-server.json', currentServer);
+                
+                // Iniciar escucha de mensajes en tiempo real
+                startRealtimeMessages();
             }
         }
 
@@ -3171,6 +3174,260 @@
         document.querySelector('.user-profile').addEventListener('click', (e) => {
             if (!e.target.closest('#logoutButton')) {
                 showEditProfileModal();
+            }
+        });
+
+        // Función para iniciar escucha de mensajes en tiempo real
+        function startRealtimeMessages() {
+            if (!currentServer) return;
+            
+            // Referencia a la colección de mensajes en Firestore
+            const messagesRef = firebase.firestore().collection('messages')
+                .where('serverId', '==', currentServer.id)
+                .orderBy('timestamp', 'desc')
+                .limit(50);
+            
+            // Escuchar cambios en tiempo real
+            messagesRef.onSnapshot((snapshot) => {
+                snapshot.docChanges().forEach((change) => {
+                    if (change.type === 'added') {
+                        const message = change.doc.data();
+                        appendMessage(message);
+                    }
+                });
+            });
+        }
+
+        // Función para enviar mensaje
+        async function sendMessage(content) {
+            if (!content || !currentServer) return;
+            
+            const currentUser = await loadData('current-user.json');
+            const currentChannel = document.querySelector('.channel-item.active .channel-name')?.textContent;
+            
+            if (currentUser && currentChannel) {
+                const message = {
+                    id: Date.now().toString(),
+                    content,
+                    userId: currentUser.id,
+                    userName: currentUser.nombre,
+                    userAvatar: currentUser.avatar,
+                    timestamp: new Date().toISOString(),
+                    serverId: currentServer.id,
+                    channelName: currentChannel
+                };
+                
+                // Guardar mensaje en Firestore
+                await firebase.firestore().collection('messages').add(message);
+                
+                // Limpiar input
+                document.querySelector('.chat-input').value = '';
+            }
+        }
+
+        // Función para mostrar mensaje en el chat
+        function appendMessage(message) {
+            const chatMessages = document.querySelector('.chat-messages');
+            const messageElement = document.createElement('div');
+            messageElement.className = 'message';
+            messageElement.innerHTML = `
+                <div class="message-avatar">
+                    ${message.userAvatar ? 
+                        `<img src="${message.userAvatar}" alt="${message.userName}">` : 
+                        `<span>${message.userName.charAt(0).toUpperCase()}</span>`}
+                </div>
+                <div class="message-content">
+                    <div class="message-header">
+                        <span class="message-author">${message.userName}</span>
+                        <span class="message-time">${new Date(message.timestamp).toLocaleTimeString()}</span>
+                    </div>
+                    <div class="message-text">${message.content}</div>
+                </div>
+            `;
+            chatMessages.appendChild(messageElement);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        // Modificar el evento de envío de mensajes
+        document.querySelector('.chat-input').addEventListener('keypress', async function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                const content = this.value.trim();
+                if (content) {
+                    await sendMessage(content);
+                }
+            }
+        });
+
+        // Modificar la función de edición de perfil
+        async function updateProfile(event) {
+            event.preventDefault();
+            
+            const submitBtn = event.target.querySelector('button[type="submit"]');
+            const loadingIndicator = document.createElement('div');
+            loadingIndicator.className = 'loading-spinner';
+            submitBtn.disabled = true;
+            submitBtn.appendChild(loadingIndicator);
+            
+            try {
+                const currentUser = await loadData('current-user.json');
+                const formData = new FormData(event.target);
+                
+                const updates = {
+                    nombre: formData.get('nombre'),
+                    apellido: formData.get('apellido'),
+                    avatar: formData.get('avatar')
+                };
+                
+                // Actualizar en Firebase
+                await firebase.firestore().collection('users').doc(currentUser.id).update(updates);
+                
+                // Actualizar datos locales
+                const updatedUser = { ...currentUser, ...updates };
+                await saveData('current-user.json', updatedUser);
+                
+                // Actualizar UI
+                document.querySelector('.user-name').textContent = updatedUser.nombre;
+                if (updatedUser.avatar) {
+                    document.querySelector('.user-avatar').innerHTML = `<img src="${updatedUser.avatar}" alt="User avatar">`;
+                }
+                
+                // Cerrar modal
+                hideModal('editProfileModal');
+                
+                // Mostrar notificación
+                showNotification('Perfil actualizado correctamente');
+            } catch (error) {
+                console.error('Error al actualizar perfil:', error);
+                showNotification('Error al actualizar perfil: ' + error.message, 'error');
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.removeChild(loadingIndicator);
+            }
+        }
+
+        // Función para unirse a un servidor
+        async function joinServer(serverId) {
+            try {
+                const serverRef = firebase.firestore().collection('servers').doc(serverId);
+                const serverDoc = await serverRef.get();
+                
+                if (!serverDoc.exists) {
+                    throw new Error('Servidor no encontrado');
+                }
+                
+                const server = serverDoc.data();
+                const currentUser = await loadData('current-user.json');
+                
+                // Agregar usuario al servidor
+                await serverRef.update({
+                    members: firebase.firestore.FieldValue.arrayUnion(currentUser.id)
+                });
+                
+                // Agregar servidor a la lista local
+                const servers = await loadData('servers.json') || [];
+                servers.push({
+                    id: serverId,
+                    name: server.name,
+                    icon: server.icon
+                });
+                await saveData('servers.json', servers);
+                
+                // Recargar servidores
+                await loadServers();
+                
+                showNotification('Te has unido al servidor correctamente');
+            } catch (error) {
+                console.error('Error al unirse al servidor:', error);
+                showNotification('Error al unirse al servidor: ' + error.message, 'error');
+            }
+        }
+
+        // Función para explorar servidores
+        async function exploreServers() {
+            try {
+                const serversRef = firebase.firestore().collection('servers');
+                const serversSnapshot = await serversRef.get();
+                
+                const serversList = document.getElementById('exploreServersList');
+                serversList.innerHTML = '';
+                
+                serversSnapshot.forEach(doc => {
+                    const server = doc.data();
+                    const serverElement = document.createElement('div');
+                    serverElement.className = 'explore-server-item';
+                    serverElement.innerHTML = `
+                        <div class="server-info">
+                            <div class="server-icon">
+                                ${server.icon ? 
+                                    `<img src="${server.icon}" alt="${server.name}">` : 
+                                    `<span>${server.name.charAt(0).toUpperCase()}</span>`}
+                            </div>
+                            <div class="server-details">
+                                <h3>${server.name}</h3>
+                                <p>${server.description || 'Sin descripción'}</p>
+                            </div>
+                        </div>
+                        <button onclick="joinServer('${doc.id}')">Unirse</button>
+                    `;
+                    serversList.appendChild(serverElement);
+                });
+                
+                showModal('exploreServersModal');
+            } catch (error) {
+                console.error('Error al cargar servidores:', error);
+                showNotification('Error al cargar servidores: ' + error.message, 'error');
+            }
+        }
+
+        // Función para buscar servidores
+        async function searchServers(query) {
+            try {
+                const serversRef = firebase.firestore().collection('servers');
+                const serversSnapshot = await serversRef
+                    .where('name', '>=', query)
+                    .where('name', '<=', query + '\uf8ff')
+                    .get();
+                
+                const serversList = document.getElementById('exploreServersList');
+                serversList.innerHTML = '';
+                
+                if (serversSnapshot.empty) {
+                    serversList.innerHTML = '<div class="no-results">No se encontraron servidores</div>';
+                    return;
+                }
+                
+                serversSnapshot.forEach(doc => {
+                    const server = doc.data();
+                    const serverElement = document.createElement('div');
+                    serverElement.className = 'explore-server-item';
+                    serverElement.innerHTML = `
+                        <div class="server-info">
+                            <div class="server-icon">
+                                ${server.icon ? 
+                                    `<img src="${server.icon}" alt="${server.name}">` : 
+                                    `<span>${server.name.charAt(0).toUpperCase()}</span>`}
+                            </div>
+                            <div class="server-details">
+                                <h3>${server.name}</h3>
+                                <p>${server.description || 'Sin descripción'}</p>
+                            </div>
+                        </div>
+                        <button onclick="joinServer('${doc.id}')">Unirse</button>
+                    `;
+                    serversList.appendChild(serverElement);
+                });
+            } catch (error) {
+                console.error('Error al buscar servidores:', error);
+                showNotification('Error al buscar servidores: ' + error.message, 'error');
+            }
+        }
+
+        // Agregar evento de búsqueda
+        document.querySelector('.search-input').addEventListener('input', function(e) {
+            const query = e.target.value.trim();
+            if (query) {
+                searchServers(query);
             }
         });
     </script>
